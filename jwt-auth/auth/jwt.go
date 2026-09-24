@@ -28,7 +28,6 @@ const (
 
 var (
 	ErrAbsentSecret = errors.New("token was not set")
-	ErrExpiredToken = errors.New("token has expired")
 	ErrInvalidToken = errors.New("invalid token")
 )
 
@@ -36,6 +35,7 @@ func getSecret() ([]byte, error) {
 	secret := os.Getenv("JWT_SECRET")
 
 	if secret == "" {
+
 		return nil, ErrAbsentSecret
 	}
 
@@ -46,6 +46,7 @@ func GenerateAccessToken(userID int64, name, email string) (string, error) {
 
 	secret, err := getSecret()
 	if err != nil {
+
 		return "", err
 	}
 
@@ -73,6 +74,7 @@ func GenerateAccessToken(userID int64, name, email string) (string, error) {
 	// as symmetric cryptographic key since they feed HS256
 	tokenString, err := token.SignedString(secret)
 	if err != nil {
+
 		return "", fmt.Errorf("error signing the access token: %w", err)
 	}
 
@@ -82,6 +84,7 @@ func GenerateAccessToken(userID int64, name, email string) (string, error) {
 func GenerateRefreshToken(userID int64) (string, error) {
 	secret, err := getSecret()
 	if err != nil {
+
 		return "", err
 	}
 
@@ -100,8 +103,91 @@ func GenerateRefreshToken(userID int64) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
 	tokenString, err := token.SignedString(secret)
 	if err != nil {
+
 		return "", fmt.Errorf("error signing the refresh token: %w", err)
 	}
 
 	return tokenString, nil
+}
+
+func makeKeyfunc(secret []byte) jwt.Keyfunc {
+	return func(token *jwt.Token) (any, error) {
+		// Type assertion, here checking whether the SigningMethod
+		// interface has a specific underlying data type.
+		// A simpler example is numberValue, ok := number.(int)
+		// or the discourage usage of just numberValue := number.(int)
+		// A more precise comparison instruction would be
+		// token.Method.Alg() != "HS256”, but the goal here is to prevent
+		// asymmetric-to-symmetric key confusion and alg: none attacks.
+		_, ok := token.Method.(*jwt.SigningMethodHMAC)
+		if !ok {
+
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+
+		return secret, nil
+	}
+}
+
+func ValidateAccessToken(tokenString string) (*Claims, error) {
+	secret, err := getSecret()
+	if err != nil {
+
+		return nil, err
+	}
+
+	// encoutering an error, the ValidateAccessToken caller just need
+	// to know that the token is expired or invalid, other causes would
+	// must be treated here
+	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, makeKeyfunc(secret))
+	if err != nil {
+		if errors.Is(err, jwt.ErrTokenExpired) {
+
+			return nil, err
+		}
+
+		return nil, ErrInvalidToken
+	}
+
+	// Getting the underlying token.Claims interface
+	// concrete/actual type (my struct Claims). At compile
+	// time, Go only recognizes the six methods (and 0 fields)
+	// the interface has e.g. GetIssuer() and GetSubject(), so I
+	// would not be able to access, for example, claims.Name and claims.Email.
+	claims, ok := token.Claims.(*Claims)
+	// Since Claims was passed to ParseWithClaims, which also returned
+	// no errors, entering this if block is very unlikely:
+	// https://github.com/golang-jwt/jwt/blob/main/parser.go#L124
+	if !ok || !token.Valid {
+
+		return nil, ErrInvalidToken
+	}
+
+	return claims, nil
+}
+
+func ValidateRefreshToken(tokenString string) (*Claims, error) {
+	secret, err := getSecret()
+	if err != nil {
+
+		return nil, err
+	}
+
+	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, makeKeyfunc(secret))
+	if err != nil {
+		if errors.Is(err, jwt.ErrTokenExpired) {
+
+			return nil, err
+		}
+
+		return nil, ErrInvalidToken
+	}
+
+	clams, ok := token.Claims.(*Claims)
+	if !ok || !token.Valid {
+
+		return nil, ErrInvalidToken
+	}
+
+	return clams, nil
 }
