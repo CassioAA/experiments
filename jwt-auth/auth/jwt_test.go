@@ -4,6 +4,9 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 func TestGetSecret_Missing(t *testing.T) {
@@ -19,7 +22,10 @@ func TestGetSecret_Missing(t *testing.T) {
 }
 
 func TestGetSecret_Present(t *testing.T) {
+	// at least 32 chars for HS256
 	expectedSecret := "super-secret-key-with-at-least-32-chars"
+	// it also runs os.Unsetenv("JWT_SECRET")
+	// https://cs.opensource.google/go/go/+/master:src/testing/testing.go;l=1692;drc=cd6dd4ce340d04b30b7e7b7a83abc8b640b6c0d5
 	t.Setenv("JWT_SECRET", expectedSecret)
 
 	secret, err := getSecret()
@@ -69,5 +75,57 @@ func TestGenerateTokens_Success(t *testing.T) {
 	}
 	if refreshToken == "" {
 		t.Errorf("expected non-empty refresh token")
+	}
+}
+
+func TestValidateAccessToken_Success(t *testing.T) {
+	t.Setenv("JWT_SECRET", "super-secret-key-with-at-least-32-chars")
+
+	tokenString, err := GenerateAccessToken(42, "Cássio", "cassio@email.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	claims, err := ValidateAccessToken(tokenString)
+	if err != nil {
+		t.Fatalf("expected valid token, got error: %v", err)
+	}
+	if claims.UserID != 42 || claims.Name != "Cássio" || claims.Email != "cassio@email.com" {
+		t.Errorf("claims data mismatch: got %+v", claims)
+	}
+}
+
+func TestValidateAccessToken_InvalidToken(t *testing.T) {
+	t.Setenv("JWT_SECRET", "super-secret-key-with-at-least-32-chars")
+
+	_, err := ValidateAccessToken("this.is.a.completely.invalid.token")
+	if !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("expected ErrInvalidToken, got %v", err)
+	}
+}
+
+func TestValidateAccessToken_ExpiredToken(t *testing.T) {
+	secretKey := []byte("super-secret-key-with-at-least-32-chars")
+	t.Setenv("JWT_SECRET", string(secretKey))
+
+	// a token that expired 1 hour ago
+	now := time.Now().Add(-1 * time.Hour)
+	expiredClaims := Claims{
+		UserID: 1,
+		Name:   "Expired User",
+		Email:  "expired@email.com",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(now),
+		},
+	}
+	expiredToken := jwt.NewWithClaims(jwt.SigningMethodHS256, expiredClaims)
+	expiredTokenString, err := expiredToken.SignedString(secretKey)
+	if err != nil {
+		t.Fatalf("failed to sign expired token: %v", err)
+	}
+
+	_, err = ValidateAccessToken(expiredTokenString)
+	if !errors.Is(err, jwt.ErrTokenExpired) {
+		t.Errorf("expected ErrExpiredToken, got %v", err)
 	}
 }
